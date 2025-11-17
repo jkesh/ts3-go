@@ -1,4 +1,4 @@
-module ts3-go
+module github.com/jkesh/ts3-go
 
 go 1.25
 
