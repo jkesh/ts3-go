@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -21,7 +22,7 @@ type Config struct {
 
 // Client TS3 ServerQuery 客户端核心结构
 type Client struct {
-	conn    net.Conn
+	conn    io.ReadWriteCloser
 	scanner *bufio.Scanner
 	mu      sync.Mutex // 互斥锁，确保 Request-Response 的原子性
 

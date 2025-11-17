@@ -1,6 +1,7 @@
 package ts3
 
 import (
+	"context"
 	"strings"
 )
 
@@ -34,8 +35,8 @@ func (c *Client) dispatchNotify(rawLine string) {
 }
 
 // OnClientEnter 注册用户进入频道事件
-func (c *Client) OnClientEnter(handler func(string)) error {
-	_, err := c.Exec("servernotifyregister event=server")
+func (c *Client) OnClientEnter(ctx context.Context, handler func(string)) error {
+	_, err := c.Exec(ctx, "servernotifyregister event=server") // 传入 ctx
 	if err != nil {
 		return err
 	}
@@ -44,19 +45,17 @@ func (c *Client) OnClientEnter(handler func(string)) error {
 }
 
 // OnTextMessage 注册接收消息事件
-func (c *Client) OnTextMessage(handler func(string)) error {
-	_, err := c.Exec("servernotifyregister event=textprivate")
-	if err != nil {
+func (c *Client) OnTextMessage(ctx context.Context, handler func(string)) error {
+	if _, err := c.Exec(ctx, "servernotifyregister event=textprivate"); err != nil {
 		return err
 	}
-	_, err = c.Exec("servernotifyregister event=textserver")
-	if err != nil {
+	if _, err := c.Exec(ctx, "servernotifyregister event=textserver"); err != nil {
 		return err
 	}
-	_, err = c.Exec("servernotifyregister event=textchannel")
-	if err != nil {
+	if _, err := c.Exec(ctx, "servernotifyregister event=textchannel"); err != nil {
 		return err
 	}
+
 	c.Register("notifytextmessage", handler)
 	return nil
 }
