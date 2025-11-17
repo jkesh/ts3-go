@@ -3,7 +3,7 @@ package ts3
 import (
 	"context"
 	"fmt"
-	"ts3-go/ts3/models"
+	"github.com/jkesh/ts3-go/ts3/models"
 )
 
 // ServerInfo 获取当前虚拟服务器详情
