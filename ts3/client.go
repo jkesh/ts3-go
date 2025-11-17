@@ -61,7 +61,7 @@ func NewClient(cfg Config) (*Client, error) {
 	c := &Client{
 		conn:          conn,
 		scanner:       bufio.NewScanner(conn),
-		cmdResChan:    make(chan string), // 无缓冲 channel，确保同步读写
+		cmdResChan:    make(chan string, 100), // 无缓冲 channel，确保同步读写
 		errorChan:     make(chan error, 1),
 		notifications: make(map[string][]func(string)),
 		quit:          make(chan struct{}),
@@ -88,18 +88,14 @@ func NewClient(cfg Config) (*Client, error) {
 // handshake 读取连接后的前两行欢迎信息
 func (c *Client) handshake() error {
 	// TS3 Server 连接后会立即发送两行:
-	// 1. "TS3"
-	// 2. "Welcome to TeamSpeak 3 Server Query Interface ..."
-	// 我们需要消耗掉这两行，否则它们会干扰后续的命令响应
 	scanner := bufio.NewScanner(c.conn)
 	for i := 0; i < 2; i++ {
 		if !scanner.Scan() {
 			return errors.New("connection closed during handshake")
 		}
-		// 可以在这里校验 scanner.Text() 是否包含 "TS3"
+
 	}
-	// 将 scanner 赋值给 client (注意：如果缓冲区有剩余数据，重新创建 scanner 可能会丢失，
-	//但在握手阶段通常没有额外数据。生产环境建议复用底层的 Reader)
+
 	c.scanner = scanner
 	return nil
 }
