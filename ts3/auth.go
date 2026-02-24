@@ -5,21 +5,32 @@ import (
 	"fmt"
 )
 
-// Login 登录 ServerQuery 账号
+// Login authenticates with ServerQuery credentials.
 func (c *Client) Login(ctx context.Context, username, password string) error {
-	cmd := fmt.Sprintf("login %s %s", Escape(username), Escape(password))
-	_, err := c.Exec(ctx, cmd) // 传入 ctx
+	cmd := fmt.Sprintf(
+		"login client_login_name=%s client_login_password=%s",
+		Escape(username),
+		Escape(password),
+	)
+	_, err := c.Exec(ctx, cmd)
 	return err
 }
 
-// Use 选择虚拟服务器 (通常是端口 9987 的 server id=1)
+// Use selects the target virtual server by server id.
 func (c *Client) Use(ctx context.Context, virtualServerID int) error {
 	cmd := fmt.Sprintf("use sid=%d", virtualServerID)
-	_, err := c.Exec(ctx, cmd) // 传入 ctx
+	_, err := c.Exec(ctx, cmd)
 	return err
 }
 
-// Logout 登出 (可选)
+// UseByPort selects the target virtual server by voice port (e.g. 9987).
+func (c *Client) UseByPort(ctx context.Context, port int) error {
+	cmd := fmt.Sprintf("use port=%d", port)
+	_, err := c.Exec(ctx, cmd)
+	return err
+}
+
+// Logout logs out the current ServerQuery session.
 func (c *Client) Logout(ctx context.Context) error {
 	_, err := c.Exec(ctx, "logout")
 	return err

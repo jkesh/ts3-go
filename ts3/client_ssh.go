@@ -1,13 +1,13 @@
 package ts3
 
 import (
-	"bufio"
 	"fmt"
 	"io"
-	"time"
 
 	"golang.org/x/crypto/ssh"
 )
+
+const defaultQuerySSHPort = 10022
 
 type sshConnWrapper struct {
 	stdin   io.WriteCloser
@@ -25,50 +25,67 @@ func (w *sshConnWrapper) Write(p []byte) (n int, err error) {
 }
 
 func (w *sshConnWrapper) Close() error {
-	// 关闭顺序很重要
 	_ = w.stdin.Close()
 	_ = w.session.Close()
 	return w.client.Close()
 }
 
-// NewSSHClient 创建基于 SSH 的连接
+// NewSSHClient creates a TS3 ServerQuery client over SSH.
+//
+// TS3 SSH ServerQuery usually listens on port 10022.
 func NewSSHClient(host string, port int, user, password string) (*Client, error) {
-	config := &ssh.ClientConfig{
-		User: user,
-		Auth: []ssh.AuthMethod{
-			ssh.Password(password),
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         10 * time.Second,
+	return NewSSHClientWithConfig(host, port, user, password, Config{})
+}
+
+// NewSSHClientWithConfig creates an SSH client with custom runtime options.
+func NewSSHClientWithConfig(host string, port int, user, password string, cfg Config) (*Client, error) {
+	if port == 0 {
+		port = defaultQuerySSHPort
 	}
+
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = defaultDialTimeout
+	}
+
+	sshCfg := &ssh.ClientConfig{
+		User:            user,
+		Auth:            []ssh.AuthMethod{ssh.Password(password)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         timeout,
+	}
+
 	addr := fmt.Sprintf("%s:%d", host, port)
-	sshClient, err := ssh.Dial("tcp", addr, config)
+	sshClient, err := ssh.Dial("tcp", addr, sshCfg)
 	if err != nil {
-		return nil, fmt.Errorf("ssh dial failed: %w", err)
+		return nil, fmt.Errorf("ts3: ssh dial failed: %w", err)
 	}
 
 	session, err := sshClient.NewSession()
 	if err != nil {
-		sshClient.Close()
-		return nil, fmt.Errorf("ssh session failed: %w", err)
-	}
-
-	if err := session.Shell(); err != nil {
-		session.Close()
-		sshClient.Close()
-		return nil, fmt.Errorf("ssh shell failed: %w", err)
+		_ = sshClient.Close()
+		return nil, fmt.Errorf("ts3: ssh new session failed: %w", err)
 	}
 
 	stdin, err := session.StdinPipe()
 	if err != nil {
-		return nil, err
+		_ = session.Close()
+		_ = sshClient.Close()
+		return nil, fmt.Errorf("ts3: ssh stdin pipe failed: %w", err)
 	}
 	stdout, err := session.StdoutPipe()
 	if err != nil {
-		return nil, err
+		_ = session.Close()
+		_ = sshClient.Close()
+		return nil, fmt.Errorf("ts3: ssh stdout pipe failed: %w", err)
 	}
 
-	// 构造 Wrapper
+	if err := session.Shell(); err != nil {
+		_ = session.Close()
+		_ = sshClient.Close()
+		return nil, fmt.Errorf("ts3: ssh shell failed: %w", err)
+	}
+
 	wrapper := &sshConnWrapper{
 		stdin:   stdin,
 		stdout:  stdout,
@@ -76,17 +93,8 @@ func NewSSHClient(host string, port int, user, password string) (*Client, error)
 		client:  sshClient,
 	}
 
-	c := &Client{
-		conn:          wrapper, // 现在可以赋值了
-		scanner:       bufio.NewScanner(stdout),
-		cmdResChan:    make(chan string),
-		errorChan:     make(chan error, 1),
-		notifications: make(map[string][]func(string)),
-		quit:          make(chan struct{}),
-		logger:        &NopLogger{},
-	}
-
-	go c.readLoop()
-
-	return c, nil
+	cfg.Host = host
+	cfg.Port = port
+	cfg.Timeout = timeout
+	return newClientFromConn(wrapper, cfg, true)
 }

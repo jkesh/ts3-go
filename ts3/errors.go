@@ -2,24 +2,26 @@ package ts3
 
 import "fmt"
 
-// Error 代表一个 TS3 服务器端返回的错误
+// Error represents an error returned by the TS3 ServerQuery API.
 type Error struct {
-	ID  int
-	Msg string
+	ID  int    `ts3:"id"`
+	Msg string `ts3:"msg"`
 }
 
+// Error implements the error interface.
 func (e *Error) Error() string {
 	return fmt.Sprintf("ts3 error %d: %s", e.ID, e.Msg)
 }
 
-// IsToCheck 检查错误 ID 是否为指定的 ID
+// Is reports whether the error code matches the provided TS3 error id.
 func (e *Error) Is(id int) bool {
-	return e.ID == id
+	return e != nil && e.ID == id
 }
 
-// 常见 TS3 错误码常量 (参考官方文档)
+// Common TS3 error codes.
 const (
-	ErrOk                  = 0
+	ErrOK                  = 0
+	ErrOk                  = ErrOK // kept for backward compatibility
 	ErrCommandNotFound     = 256
 	ErrParameterNotFound   = 257
 	ErrDatabaseEmptyResult = 1281
@@ -28,9 +30,9 @@ const (
 	ErrFloodBan            = 3329
 )
 
-// NewError 构造函数
+// NewError returns nil when id is zero, otherwise it returns *Error.
 func NewError(id int, msg string) error {
-	if id == 0 {
+	if id == ErrOK {
 		return nil
 	}
 	return &Error{ID: id, Msg: msg}

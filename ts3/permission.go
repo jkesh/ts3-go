@@ -3,6 +3,8 @@ package ts3
 import (
 	"context"
 	"fmt"
+
+	"github.com/jkesh/ts3-go/ts3/models"
 )
 
 // --- 频道权限 (Channel Permissions) ---
@@ -105,4 +107,98 @@ func (c *Client) ClientDelPerm(ctx context.Context, cldbid int, permName string)
 	cmd := fmt.Sprintf("clientdelperm cldbid=%d permsid=%s", cldbid, Escape(permName))
 	_, err := c.Exec(ctx, cmd)
 	return err
+}
+
+// --- 权限查询 (Permission Listing) ---
+
+// PermissionList 返回实例上全部权限定义。
+func (c *Client) PermissionList(ctx context.Context) ([]models.PermissionEntry, error) {
+	resp, err := c.Exec(ctx, "permissionlist")
+	if err != nil {
+		return nil, err
+	}
+
+	var out []models.PermissionEntry
+	if err := NewDecoder().Decode(resp, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ServerGroupPermList 返回服务器组权限。
+// includePermSID=true 时追加 "-permsid" 选项。
+func (c *Client) ServerGroupPermList(ctx context.Context, sgid int, includePermSID bool) ([]models.PermissionEntry, error) {
+	cmd := fmt.Sprintf("servergrouppermlist sgid=%d", sgid)
+	if includePermSID {
+		cmd += " -permsid"
+	}
+
+	resp, err := c.Exec(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []models.PermissionEntry
+	if err := NewDecoder().Decode(resp, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ChannelGroupPermList 返回频道组权限。
+// cid 可为 0；includePermSID=true 时追加 "-permsid" 选项。
+func (c *Client) ChannelGroupPermList(ctx context.Context, cgid int, cid int, includePermSID bool) ([]models.PermissionEntry, error) {
+	cmd := fmt.Sprintf("channelgrouppermlist cgid=%d cid=%d", cgid, cid)
+	if includePermSID {
+		cmd += " -permsid"
+	}
+
+	resp, err := c.Exec(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []models.PermissionEntry
+	if err := NewDecoder().Decode(resp, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ChannelPermList 返回频道权限。
+func (c *Client) ChannelPermList(ctx context.Context, cid int, includePermSID bool) ([]models.PermissionEntry, error) {
+	cmd := fmt.Sprintf("channelpermlist cid=%d", cid)
+	if includePermSID {
+		cmd += " -permsid"
+	}
+
+	resp, err := c.Exec(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []models.PermissionEntry
+	if err := NewDecoder().Decode(resp, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ClientPermList 返回客户端数据库账号的特殊权限。
+func (c *Client) ClientPermList(ctx context.Context, cldbid int, includePermSID bool) ([]models.PermissionEntry, error) {
+	cmd := fmt.Sprintf("clientpermlist cldbid=%d", cldbid)
+	if includePermSID {
+		cmd += " -permsid"
+	}
+
+	resp, err := c.Exec(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []models.PermissionEntry
+	if err := NewDecoder().Decode(resp, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

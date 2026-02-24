@@ -10,68 +10,111 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	// 确保引用路径正确
-	"github.com/jkesh/ts3-go/ts3/models"
 )
 
-// Config 客户端配置
+const (
+	defaultQueryPort   = 10011
+	defaultDialTimeout = 10 * time.Second
+	defaultMaxLineSize = 1024 * 1024
+	defaultCmdBufSize  = 256
+)
+
+// Config holds connection and runtime options for a TS3 ServerQuery client.
 type Config struct {
 	Host            string
 	Port            int
 	Timeout         time.Duration
 	KeepAlivePeriod time.Duration
+	MaxLineSize     int
 }
 
-// Client TS3 ServerQuery 客户端
+// Client is a TS3 ServerQuery client.
+//
+// Commands are executed sequentially because ServerQuery replies do not include
+// per-request IDs. Use one Client instance per connection/session.
 type Client struct {
 	conn    io.ReadWriteCloser
 	scanner *bufio.Scanner
-	mu      sync.Mutex
 
-	cmdResChan    chan string
-	errorChan     chan error
+	mu         sync.Mutex
+	cmdResChan chan string
+	errorChan  chan error
+
 	notifications map[string][]func(string)
 	notifyMu      sync.RWMutex
-	quit          chan struct{}
-	logger        Logger
+
+	quit      chan struct{}
+	closeOnce sync.Once
+
+	logger   Logger
+	loggerMu sync.RWMutex
 }
 
-// NewClient 创建连接
+// NewClient creates a TCP-based TS3 ServerQuery client.
 func NewClient(cfg Config) (*Client, error) {
-	address := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
-	timeout := cfg.Timeout
-	if timeout == 0 {
-		timeout = 10 * time.Second
+	if strings.TrimSpace(cfg.Host) == "" {
+		return nil, errors.New("ts3: host is required")
 	}
 
-	conn, err := net.DialTimeout("tcp", address, timeout)
-	if err != nil {
-		return nil, err
+	port := cfg.Port
+	if port == 0 {
+		port = defaultQueryPort
 	}
+
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = defaultDialTimeout
+	}
+
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", cfg.Host, port), timeout)
+	if err != nil {
+		return nil, fmt.Errorf("ts3: dial failed: %w", err)
+	}
+
+	cfg.Port = port
+	cfg.Timeout = timeout
+	return newClientFromConn(conn, cfg, true)
+}
+
+// NewClientFromConn creates a client from an existing connection.
+//
+// It is useful for tests or custom transports.
+func NewClientFromConn(conn io.ReadWriteCloser, cfg Config) (*Client, error) {
+	return newClientFromConn(conn, cfg, true)
+}
+
+func newClientFromConn(conn io.ReadWriteCloser, cfg Config, doHandshake bool) (*Client, error) {
+	if conn == nil {
+		return nil, errors.New("ts3: nil connection")
+	}
+
+	maxLineSize := cfg.MaxLineSize
+	if maxLineSize <= 0 {
+		maxLineSize = defaultMaxLineSize
+	}
+
+	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
 
 	c := &Client{
-		conn: conn,
-		// [重要] Scanner 在这里创建一次并复用，防止缓冲区数据丢失
-		scanner: bufio.NewScanner(conn),
-		// [重要] 缓冲区设为 100，防止阻塞
-		cmdResChan:    make(chan string, 100),
+		conn:          conn,
+		scanner:       scanner,
+		cmdResChan:    make(chan string, defaultCmdBufSize),
 		errorChan:     make(chan error, 1),
 		notifications: make(map[string][]func(string)),
 		quit:          make(chan struct{}),
 		logger:        &NopLogger{},
 	}
 
-	// 执行握手
-	if err := c.handshake(); err != nil {
-		_ = conn.Close()
-		return nil, err
+	if doHandshake {
+		if err := c.handshake(); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
 	}
 
-	// 启动后台读取
 	go c.readLoop()
 
-	// 启动心跳
 	if cfg.KeepAlivePeriod > 0 {
 		go c.keepAliveLoop(cfg.KeepAlivePeriod)
 	}
@@ -79,121 +122,152 @@ func NewClient(cfg Config) (*Client, error) {
 	return c, nil
 }
 
-// handshake 读取前两行欢迎信息
+// handshake reads and validates the initial ServerQuery banner.
 func (c *Client) handshake() error {
-	for i := 0; i < 2; i++ {
+	lines := make([]string, 0, 2)
+	for len(lines) < 2 {
 		if !c.scanner.Scan() {
-			return errors.New("connection closed during handshake")
+			return errors.New("ts3: connection closed during handshake")
 		}
-		// 可以在这里校验 text 是否包含 "TS3"
+		text := strings.TrimSpace(c.scanner.Text())
+		if text == "" {
+			continue
+		}
+		lines = append(lines, text)
 	}
+
+	if !strings.Contains(strings.ToUpper(lines[0]), "TS3") {
+		return fmt.Errorf("ts3: unexpected handshake banner: %q", lines[0])
+	}
+
 	return nil
 }
 
-// Close 关闭连接
+// Close closes the client connection and stops background loops.
 func (c *Client) Close() error {
-	select {
-	case <-c.quit:
-		return nil
-	default:
+	var closeErr error
+	c.closeOnce.Do(func() {
 		close(c.quit)
-		return c.conn.Close()
-	}
+		closeErr = c.conn.Close()
+	})
+	return closeErr
 }
 
-// Exec 执行命令
+// Exec sends a raw ServerQuery command and returns the data part of response.
+//
+// The returned string contains one or multiple response rows joined by "|" and
+// excludes the final "error id=..." line.
 func (c *Client) Exec(ctx context.Context, cmd string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 快速失败检查
 	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
+	case <-c.quit:
+		return "", errors.New("ts3: client closed")
 	default:
 	}
 
-	// 发送命令
 	if _, err := c.conn.Write([]byte(cmd + "\n")); err != nil {
-		return "", err
+		return "", fmt.Errorf("ts3: write failed: %w", err)
 	}
+	c.debugf("-> %s", cmd)
 
-	c.logger.Debugf("-> %s", cmd)
-
-	var responseBuilder strings.Builder
+	ctxDone := ctx.Done()
+	var ctxErr error
+	var responseLines []string
+	cmdCh := c.cmdResChan
+	errCh := c.errorChan
 
 	for {
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
+		if cmdCh == nil && errCh == nil {
+			if ctxErr != nil {
+				return strings.Join(responseLines, "|"), ctxErr
+			}
+			return strings.Join(responseLines, "|"), errors.New("ts3: connection closed")
+		}
 
-		case line, ok := <-c.cmdResChan:
+		select {
+		case <-ctxDone:
+			// Keep draining until the command terminator ("error id=...") arrives.
+			// This preserves protocol sync for subsequent commands.
+			ctxErr = ctx.Err()
+			ctxDone = nil
+
+		case line, ok := <-cmdCh:
 			if !ok {
-				return "", errors.New("connection closed")
+				cmdCh = nil
+				continue
 			}
 
-			// [核心修复] 去除首尾空白字符（包括 \r 和 \n），防止判断失败
-			trimmedLine := strings.TrimSpace(line)
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
 
-			// 检查是否是 error 行
-			if strings.HasPrefix(trimmedLine, "error id=") {
-				c.logger.Debugf("<- %s", trimmedLine)
+			if strings.HasPrefix(line, "error id=") {
+				c.debugf("<- %s", line)
 
 				var ts3Err Error
-				// 解析错误信息
-				if err := NewDecoder().Decode(trimmedLine, &ts3Err); err != nil {
-					return "", fmt.Errorf("decode error: %w", err)
+				if err := NewDecoder().Decode(line, &ts3Err); err != nil {
+					return strings.Join(responseLines, "|"), fmt.Errorf("ts3: failed to decode error line: %w", err)
 				}
 
-				if ts3Err.ID != 0 {
-					return responseBuilder.String(), &ts3Err
+				if ctxErr != nil {
+					return strings.Join(responseLines, "|"), ctxErr
 				}
-				// 成功，返回之前累积的数据
-				return strings.TrimSpace(responseBuilder.String()), nil
+
+				if ts3Err.ID != ErrOK {
+					return strings.Join(responseLines, "|"), &ts3Err
+				}
+				return strings.Join(responseLines, "|"), nil
 			}
 
-			// 拼接数据行
-			if responseBuilder.Len() > 0 {
-				responseBuilder.WriteString("|")
-			}
-			responseBuilder.WriteString(line)
+			responseLines = append(responseLines, line)
 
-		case err := <-c.errorChan:
-			return "", fmt.Errorf("connection error: %w", err)
+		case err, ok := <-errCh:
+			if !ok {
+				errCh = nil
+				continue
+			}
+			if err != nil {
+				return strings.Join(responseLines, "|"), fmt.Errorf("ts3: connection error: %w", err)
+			}
 
 		case <-c.quit:
-			return "", errors.New("client closed")
+			if ctxErr != nil {
+				return strings.Join(responseLines, "|"), ctxErr
+			}
+			return strings.Join(responseLines, "|"), errors.New("ts3: client closed")
 		}
 	}
 }
 
-// readLoop 后台读取循环
+// readLoop continuously reads lines from the connection.
 func (c *Client) readLoop() {
-	defer close(c.errorChan)
-
-	// Panic 恢复，防止程序崩溃
 	defer func() {
 		if r := recover(); r != nil {
-			c.logger.Printf("Panic in readLoop: %v", r)
-			c.errorChan <- fmt.Errorf("panic: %v", r)
+			c.logf("panic in readLoop: %v", r)
+			c.sendConnErr(fmt.Errorf("ts3: panic in readLoop: %v", r))
 		}
+		close(c.cmdResChan)
+		close(c.errorChan)
 	}()
 
 	for c.scanner.Scan() {
-		text := c.scanner.Text()
-
-		if len(text) == 0 {
+		text := strings.TrimSpace(c.scanner.Text())
+		if text == "" {
 			continue
 		}
 
-		// 处理异步通知
 		if strings.HasPrefix(text, "notify") {
 			go c.dispatchNotify(text)
 			continue
 		}
 
-		// 将数据发给 Exec
-		// [重要] 移除了 default 分支，确保数据一定会进入通道（除非连接关闭）
 		select {
 		case c.cmdResChan <- text:
 		case <-c.quit:
@@ -202,11 +276,21 @@ func (c *Client) readLoop() {
 	}
 
 	if err := c.scanner.Err(); err != nil {
-		c.errorChan <- err
+		c.sendConnErr(err)
 	}
 }
 
-// keepAliveLoop 心跳保活
+func (c *Client) sendConnErr(err error) {
+	if err == nil {
+		return
+	}
+	select {
+	case c.errorChan <- err:
+	default:
+	}
+}
+
+// keepAliveLoop periodically executes "whoami" to keep long-lived sessions alive.
 func (c *Client) keepAliveLoop(period time.Duration) {
 	ticker := time.NewTicker(period)
 	defer ticker.Stop()
@@ -214,7 +298,6 @@ func (c *Client) keepAliveLoop(period time.Duration) {
 	for {
 		select {
 		case <-ticker.C:
-			// 发送 whoami 作为心跳，设置 5 秒超时
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_, _ = c.Exec(ctx, "whoami")
 			cancel()
@@ -224,24 +307,30 @@ func (c *Client) keepAliveLoop(period time.Duration) {
 	}
 }
 
-// SetLogger 设置日志
+// SetLogger sets the logger used by the client.
 func (c *Client) SetLogger(l Logger) {
 	if l == nil {
-		c.logger = &NopLogger{}
-	} else {
-		c.logger = l
+		l = &NopLogger{}
 	}
+	c.loggerMu.Lock()
+	c.logger = l
+	c.loggerMu.Unlock()
 }
 
-// 兼容性 Helper 方法（建议在 methods.go 中实现，这里保留是为了防止报错）
-func (c *Client) ServerGroupList(ctx context.Context) ([]models.ServerGroup, error) {
-	resp, err := c.Exec(ctx, "servergrouplist")
-	if err != nil {
-		return nil, err
+func (c *Client) getLogger() Logger {
+	c.loggerMu.RLock()
+	l := c.logger
+	c.loggerMu.RUnlock()
+	if l == nil {
+		return &NopLogger{}
 	}
-	var groups []models.ServerGroup
-	if err := NewDecoder().Decode(resp, &groups); err != nil {
-		return nil, err
-	}
-	return groups, nil
+	return l
+}
+
+func (c *Client) logf(format string, v ...interface{}) {
+	c.getLogger().Printf(format, v...)
+}
+
+func (c *Client) debugf(format string, v ...interface{}) {
+	c.getLogger().Debugf(format, v...)
 }
