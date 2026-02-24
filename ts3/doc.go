@@ -1,7 +1,8 @@
-// Package ts3 provides a Go client for TeamSpeak 3 ServerQuery.
+// Package ts3 provides a Go client for TeamSpeak ServerQuery/WebQuery.
 //
 // It supports:
-//   - TCP and SSH connection modes
+//   - TCP and SSH ServerQuery modes
+//   - HTTP/HTTPS WebQuery mode (x-api-key)
 //   - Session auth/selection (login/use/logout)
 //   - Common server/client/channel management methods
 //   - Permission and token operations

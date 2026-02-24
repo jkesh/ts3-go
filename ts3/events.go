@@ -2,9 +2,12 @@ package ts3
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 )
+
+var errWebQueryNotifyUnsupported = errors.New("ts3: event notifications are not supported in webquery mode")
 
 // Register registers a raw notification handler by notify event name.
 //
@@ -49,6 +52,9 @@ func (c *Client) dispatchNotify(rawLine string) {
 
 // RegisterServerEvents subscribes to server-level client enter/leave/move events.
 func (c *Client) RegisterServerEvents(ctx context.Context) error {
+	if c.isWebQuery() {
+		return errWebQueryNotifyUnsupported
+	}
 	_, err := c.Exec(ctx, "servernotifyregister event=server")
 	return err
 }
@@ -59,6 +65,9 @@ func (c *Client) RegisterServerEvents(ctx context.Context) error {
 //   - 0: current/default behavior
 //   - >0: explicit channel id
 func (c *Client) RegisterChannelEvents(ctx context.Context, channelID int) error {
+	if c.isWebQuery() {
+		return errWebQueryNotifyUnsupported
+	}
 	cmd := "servernotifyregister event=channel"
 	if channelID > 0 {
 		cmd += " id=" + strconv.Itoa(channelID)
@@ -69,6 +78,9 @@ func (c *Client) RegisterChannelEvents(ctx context.Context, channelID int) error
 
 // RegisterTextEvents subscribes to private, channel and server text message events.
 func (c *Client) RegisterTextEvents(ctx context.Context) error {
+	if c.isWebQuery() {
+		return errWebQueryNotifyUnsupported
+	}
 	if _, err := c.Exec(ctx, "servernotifyregister event=textprivate"); err != nil {
 		return err
 	}
@@ -83,6 +95,9 @@ func (c *Client) RegisterTextEvents(ctx context.Context) error {
 
 // UnregisterNotify unsubscribes current query client from notifications.
 func (c *Client) UnregisterNotify(ctx context.Context) error {
+	if c.isWebQuery() {
+		return errWebQueryNotifyUnsupported
+	}
 	_, err := c.Exec(ctx, "servernotifyunregister")
 	return err
 }

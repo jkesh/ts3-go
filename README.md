@@ -1,6 +1,10 @@
 # ts3-go
 
-`ts3-go` 是一个 TeamSpeak 3 ServerQuery 的 Go 客户端库，支持 TCP/SSH 连接、查询/管理命令封装、事件订阅与统一错误处理。
+`ts3-go` 是一个 TeamSpeak ServerQuery 客户端库，支持：
+
+- 传统 ServerQuery（TCP `10011` / SSH `10022`）
+- WebQuery REST（HTTP/HTTPS + `x-api-key`）
+- 查询/管理命令封装、统一错误处理
 
 ## 安装
 
@@ -10,11 +14,13 @@ go get github.com/jkesh/ts3-go
 
 ## 先决条件
 
-- TeamSpeak 3 Server 已开启 ServerQuery（默认 TCP `10011`，SSH `10022`）
+- TeamSpeak 6 Server（或兼容 ServerQuery/WebQuery 的版本）已开启查询接口
+- 传统 Query 默认端口：TCP `10011`，SSH `10022`
+- WebQuery 默认端口：HTTP `10080`，HTTPS `10443`
 - 已有可登录的 Query 账号（通常是 `serveradmin`）
 - 账号具备目标操作权限（例如封禁、改组、改权限）
 
-## 快速开始
+## 快速开始（TCP ServerQuery）
 
 ```go
 package main
@@ -72,6 +78,35 @@ if err != nil {
 }
 defer client.Close()
 ```
+
+## TeamSpeak 6 WebQuery REST 模式
+
+```go
+client, err := ts3.NewWebQueryClient(ts3.WebQueryConfig{
+	Host:            "127.0.0.1",
+	Port:            10080, // HTTPS 默认端口是 10443
+	APIKey:          "your_api_key",
+	VirtualServerID: 1, // 可选，等价于先 Use(sid)
+	Timeout:         8 * time.Second,
+})
+if err != nil {
+	log.Fatal(err)
+}
+defer client.Close()
+
+// REST 模式不需要 Login；可直接调用业务命令
+info, err := client.ServerInfo(ctx)
+if err != nil {
+	log.Fatal(err)
+}
+log.Println(info.Name)
+```
+
+注意：
+
+- WebQuery 模式下 `Login/Logout` 为兼容保留（无实际登录动作，认证靠 API Key）。
+- `Use/UseByPort` 会切换 REST 请求路径中的 `sid`。
+- 事件推送（`OnTextMessage` 等）在 WebQuery 模式不支持流式通知。
 
 ## 常用命令示例
 

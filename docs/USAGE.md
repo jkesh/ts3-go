@@ -30,7 +30,29 @@ if err != nil {
 defer client.Close()
 ```
 
-### 1.3 登录并选服
+### 1.3 WebQuery REST 连接（TS6 推荐）
+
+```go
+client, err := ts3.NewWebQueryClient(ts3.WebQueryConfig{
+	Host:            "127.0.0.1",
+	Port:            10080, // HTTPS 默认 10443
+	APIKey:          "your_api_key",
+	VirtualServerID: 1, // 可选：直接指定 sid
+	Timeout:         8 * time.Second,
+})
+if err != nil {
+	log.Fatal(err)
+}
+defer client.Close()
+```
+
+说明：
+
+- WebQuery 认证使用 `x-api-key`，不依赖 `login` 命令。
+- WebQuery 模式下 `Use/UseByPort` 仍可用，用于切换目标 `sid`。
+- WebQuery 模式暂不支持实时事件推送（`OnTextMessage` / `OnClientEnter` 等）。
+
+### 1.4 登录并选服（TCP/SSH 模式）
 
 ```go
 ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -50,6 +72,27 @@ if err := client.UseByPort(ctx, 9987); err != nil {
 	log.Fatal(err)
 }
 ```
+
+### 1.5 生成 WebQuery API Key（一次性）
+
+如果你当前只有传统 Query 账号，可先在 TCP/SSH 模式生成 API Key：
+
+```go
+raw, err := client.Exec(ctx, "apikeyadd scope=manage lifetime=157680000")
+if err != nil {
+	log.Fatal(err)
+}
+
+var out struct {
+	APIKey string `ts3:"apikey"`
+}
+if err := ts3.NewDecoder().Decode(raw, &out); err != nil {
+	log.Fatal(err)
+}
+log.Printf("api key: %s", out.APIKey)
+```
+
+然后用这个 key 创建 `NewWebQueryClient(...)`。
 
 ## 2. 基础查询命令
 

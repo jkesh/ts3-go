@@ -13,10 +13,19 @@ import (
 )
 
 const (
-	defaultQueryPort   = 10011
-	defaultDialTimeout = 10 * time.Second
-	defaultMaxLineSize = 1024 * 1024
-	defaultCmdBufSize  = 256
+	defaultQueryPort       = 10011
+	defaultWebQueryPort    = 10080
+	defaultWebQueryTLSPort = 10443
+	defaultDialTimeout     = 10 * time.Second
+	defaultMaxLineSize     = 1024 * 1024
+	defaultCmdBufSize      = 256
+)
+
+type clientTransport int
+
+const (
+	transportRaw clientTransport = iota
+	transportWebQuery
 )
 
 // Config holds connection and runtime options for a TS3 ServerQuery client.
@@ -35,10 +44,13 @@ type Config struct {
 type Client struct {
 	conn    io.ReadWriteCloser
 	scanner *bufio.Scanner
+	web     *webQueryRuntime
 
-	mu         sync.Mutex
-	cmdResChan chan string
-	errorChan  chan error
+	mu          sync.Mutex
+	cmdResChan  chan string
+	errorChan   chan error
+	transport   clientTransport
+	selectedSID int
 
 	notifications map[string][]func(string)
 	notifyMu      sync.RWMutex
@@ -99,6 +111,7 @@ func newClientFromConn(conn io.ReadWriteCloser, cfg Config, doHandshake bool) (*
 	c := &Client{
 		conn:          conn,
 		scanner:       scanner,
+		transport:     transportRaw,
 		cmdResChan:    make(chan string, defaultCmdBufSize),
 		errorChan:     make(chan error, 1),
 		notifications: make(map[string][]func(string)),
@@ -148,7 +161,9 @@ func (c *Client) Close() error {
 	var closeErr error
 	c.closeOnce.Do(func() {
 		close(c.quit)
-		closeErr = c.conn.Close()
+		if c.conn != nil {
+			closeErr = c.conn.Close()
+		}
 	})
 	return closeErr
 }
@@ -169,6 +184,10 @@ func (c *Client) Exec(ctx context.Context, cmd string) (string, error) {
 	case <-c.quit:
 		return "", errors.New("ts3: client closed")
 	default:
+	}
+
+	if c.transport == transportWebQuery {
+		return c.execWebQuery(ctx, cmd)
 	}
 
 	if _, err := c.conn.Write([]byte(cmd + "\n")); err != nil {
@@ -299,7 +318,11 @@ func (c *Client) keepAliveLoop(period time.Duration) {
 		select {
 		case <-ticker.C:
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_, _ = c.Exec(ctx, "whoami")
+			keepAliveCmd := "whoami"
+			if c.isWebQuery() {
+				keepAliveCmd = "version"
+			}
+			_, _ = c.Exec(ctx, keepAliveCmd)
 			cancel()
 		case <-c.quit:
 			return
@@ -333,4 +356,14 @@ func (c *Client) logf(format string, v ...interface{}) {
 
 func (c *Client) debugf(format string, v ...interface{}) {
 	c.getLogger().Debugf(format, v...)
+}
+
+func (c *Client) isWebQuery() bool {
+	return c.transport == transportWebQuery
+}
+
+func (c *Client) setSelectedSID(sid int) {
+	c.mu.Lock()
+	c.selectedSID = sid
+	c.mu.Unlock()
 }
